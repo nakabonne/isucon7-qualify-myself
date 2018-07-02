@@ -621,6 +621,10 @@ func postAddChannel(c echo.Context) error {
 		fmt.Sprintf("/channel/%v", lastID))
 }
 
+func iconPath(name string) string {
+	return fmt.Sprintf("../public/icons/%s", name)
+}
+
 func postProfile(c echo.Context) error {
 	self, err := ensureLogin(c)
 	if self == nil {
@@ -704,6 +708,10 @@ func getIcon(c echo.Context) error {
 		mime = "image/gif"
 	default:
 		return echo.ErrNotFound
+	}
+
+	if err := ioutil.WriteFile(iconPath(name), data, 0644); err != nil {
+		return err
 	}
 	return c.Blob(http.StatusOK, mime, data)
 }

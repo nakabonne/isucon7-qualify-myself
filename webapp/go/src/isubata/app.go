@@ -632,7 +632,6 @@ func postProfile(c echo.Context) error {
 	}
 
 	avatarName := ""
-	//var avatarData []byte
 
 	fh, err := c.FormFile("avatar_icon")
 	if err == http.ErrMissingFile {
@@ -652,29 +651,14 @@ func postProfile(c echo.Context) error {
 			return ErrBadReqeust
 		}
 
-		/*file, err := fh.Open()
-		if err != nil {
-			return err
-		}*/
-		//	avatarData, _ = ioutil.ReadAll(file)
-		//	file.Close()
-
 		if fh.Size > avatarMaxBytes {
 			return ErrBadReqeust
 		}
 
-		avatarName = fmt.Sprintf("%x%s", fh.Filename, ext)
+		avatarName = fmt.Sprintf("%d_%s%s", self.ID, fh.Filename, ext)
 	}
 
 	if avatarName != "" {
-		/*_, err := db.Exec("INSERT INTO image (name, data) VALUES (?, ?)", avatarName, avatarData)
-		if err != nil {
-			return err
-		}
-		_, err = db.Exec("UPDATE user SET avatar_icon = ? WHERE id = ?", avatarName, self.ID)
-		if err != nil {
-			return err
-		}*/
 		dst, err := os.Create(iconPath(avatarName))
 		if err != nil {
 			return err

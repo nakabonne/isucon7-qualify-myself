@@ -19,5 +19,5 @@ $ make rotate
 ## Execute alp
 
 ```sh
-$ make alp
+$ make file=${LOG_FILE_PATH} alp
 ```

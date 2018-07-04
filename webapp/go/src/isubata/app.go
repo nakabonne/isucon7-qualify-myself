@@ -17,12 +17,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/garyburd/redigo/redis"
 	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/sessions"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/middleware"
+	redistore "gopkg.in/boj/redistore.v1"
 )
 
 const (
@@ -30,8 +32,10 @@ const (
 )
 
 var (
+	pool          *redis.Pool
 	db            *sqlx.DB
 	ErrBadReqeust = echo.NewHTTPError(http.StatusBadRequest)
+	sessionStore  *redistore.RediStore
 )
 
 type Renderer struct {
@@ -63,9 +67,26 @@ func init() {
 	if db_password != "" {
 		db_password = ":" + db_password
 	}
+	redis_url := os.Getenv("ISUBATA_REDIS_URL")
+	if redis_url == "" {
+		redis_url = "redis://localhost:6379"
+	}
 
-	dsn := fmt.Sprintf("%s%s@tcp(%s:%s)/isubata?parseTime=true&loc=Local&charset=utf8mb4",
+	dsn := fmt.Sprintf("%s%s@tcp(%s:%s)/isubata?parseTime=true&loc=Local&charset=utf8mb4&interpolateParams=true",
 		db_user, db_password, db_host, db_port)
+	pool = &redis.Pool{
+		MaxIdle:     10,
+		IdleTimeout: 10 * time.Second,
+		Dial: func() (redis.Conn, error) {
+			return redis.DialURL(redis_url)
+		},
+	}
+	log.Printf("Connecting to redis: %#v", pool)
+	var err error
+	sessionStore, err = redistore.NewRediStoreWithPool(pool, []byte("secretonymoris"))
+	if err != nil {
+		panic(err)
+	}
 
 	log.Printf("Connecting to db: %q", dsn)
 	db, _ = sqlx.Connect("mysql", dsn)
@@ -81,6 +102,7 @@ func init() {
 	db.SetMaxOpenConns(20)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	log.Printf("Succeeded to connect db.")
+
 }
 
 type User struct {
@@ -111,7 +133,21 @@ func addMessage(channelID, userID int64, content string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	msg := &Message{}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	err = db.Get(msg, "SELECT * FROM message WHERE id = ?", id)
+	if err != nil {
+		return 0, err
+	}
+	err = appendMessageID(msg)
+	if err != nil {
+		return 0, err
+	}
+
+	return id, nil
 }
 
 type Message struct {
@@ -207,7 +243,22 @@ func getInitialize(c echo.Context) error {
 	db.MustExec("DELETE FROM image WHERE id > 1001")
 	db.MustExec("DELETE FROM channel WHERE id > 10")
 	db.MustExec("DELETE FROM message WHERE id > 10000")
-	db.MustExec("DELETE FROM haveread")
+	conn := pool.Get()
+	defer conn.Close()
+	conn.Do("FLUSHALL")
+
+	msgs := []*Message{}
+	err := db.Select(&msgs, "SELECT * FROM message ORDER BY id")
+	if err != nil {
+		return err
+	}
+	for _, msg := range msgs {
+		err := appendMessageID(msg)
+		if err != nil {
+			return err
+		}
+	}
+
 	return c.String(204, "")
 }
 
@@ -217,9 +268,7 @@ func getIndex(c echo.Context) error {
 		return c.Redirect(http.StatusSeeOther, "/channel/1")
 	}
 
-	return c.Render(http.StatusOK, "index", map[string]interface{}{
-		"ChannelID": nil,
-	})
+	return c.File("../public/index.html")
 }
 
 type ChannelInfo struct {
@@ -261,11 +310,7 @@ func getChannel(c echo.Context) error {
 }
 
 func getRegister(c echo.Context) error {
-	return c.Render(http.StatusOK, "register", map[string]interface{}{
-		"ChannelID": 0,
-		"Channels":  []ChannelInfo{},
-		"User":      nil,
-	})
+	return c.File("../public/register.html")
 }
 
 func postRegister(c echo.Context) error {
@@ -288,11 +333,7 @@ func postRegister(c echo.Context) error {
 }
 
 func getLogin(c echo.Context) error {
-	return c.Render(http.StatusOK, "login", map[string]interface{}{
-		"ChannelID": 0,
-		"Channels":  []ChannelInfo{},
-		"User":      nil,
-	})
+	return c.File("../public/login.html")
 }
 
 func postLogin(c echo.Context) error {
@@ -350,21 +391,6 @@ func postMessage(c echo.Context) error {
 	return c.NoContent(204)
 }
 
-/*func jsonifyMessage(m Message) (map[string]interface{}, error) {
-	u := User{}
-	err := db.Get(&u, "SELECT name, display_name, avatar_icon FROM user WHERE id = ?",
-		m.UserID)
-	if err != nil {
-		return nil, err
-	}
-
-	r := make(map[string]interface{})
-	r["id"] = m.ID
-	r["user"] = u
-	r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
-	r["content"] = m.Content
-	return r, nil
-}*/
 func jsonifyMessages(ms []*Message) ([]map[string]interface{}, error) {
 	if len(ms) == 0 {
 		return []map[string]interface{}{}, nil
@@ -426,16 +452,14 @@ func getMessage(c echo.Context) error {
 	for i := len(messages) - 1; i >= 0; i-- {
 		rev = append(rev, messages[i])
 	}
+
 	response, err := jsonifyMessages(rev)
 	if err != nil {
 		return err
 	}
 
 	if len(messages) > 0 {
-		_, err := db.Exec("INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at)"+
-			" VALUES (?, ?, ?, NOW(), NOW())"+
-			" ON DUPLICATE KEY UPDATE message_id = ?, updated_at = NOW()",
-			userID, chanID, messages[0].ID, messages[0].ID)
+		err := setLastSeenMessageID(userID, chanID, messages[0].ID)
 		if err != nil {
 			return err
 		}
@@ -448,27 +472,6 @@ func queryChannels() ([]int64, error) {
 	res := []int64{}
 	err := db.Select(&res, "SELECT id FROM channel")
 	return res, err
-}
-
-func queryHaveRead(userID, chID int64) (int64, error) {
-	type HaveRead struct {
-		UserID    int64     `db:"user_id"`
-		ChannelID int64     `db:"channel_id"`
-		MessageID int64     `db:"message_id"`
-		UpdatedAt time.Time `db:"updated_at"`
-		CreatedAt time.Time `db:"created_at"`
-	}
-	h := HaveRead{}
-
-	err := db.Get(&h, "SELECT * FROM haveread WHERE user_id = ? AND channel_id = ?",
-		userID, chID)
-
-	if err == sql.ErrNoRows {
-		return 0, nil
-	} else if err != nil {
-		return 0, err
-	}
-	return h.MessageID, nil
 }
 
 func fetchUnread(c echo.Context) error {
@@ -487,20 +490,16 @@ func fetchUnread(c echo.Context) error {
 	resp := []map[string]interface{}{}
 
 	for _, chID := range channels {
-		lastID, err := queryHaveRead(userID, chID)
-		if err != nil {
+		lastID, err := getLastSeenMessageID(userID, chID)
+		if err != nil && err != redis.ErrNil {
 			return err
 		}
 
 		var cnt int64
-		if lastID > 0 {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ? AND ? < id",
-				chID, lastID)
+		if err == nil {
+			cnt, err = countUnreadMessages(chID, lastID)
 		} else {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ?",
-				chID)
+			cnt, err = countMessages(chID)
 		}
 		if err != nil {
 			return err
@@ -537,13 +536,7 @@ func getHistory(c echo.Context) error {
 	}
 
 	const N = 20
-	// TODO: redisに乗せる
-	var cnt int64
-	err = db.Get(&cnt, "SELECT COUNT(*) as cnt FROM message WHERE channel_id = ?", chID)
-	if err != nil {
-		return err
-	}
-	//cnt, err := countMessages(chID)
+	cnt, err := countMessages(chID)
 	if err != nil {
 		return err
 	}
@@ -752,7 +745,6 @@ func getIcon(c echo.Context) error {
 	default:
 		return echo.ErrNotFound
 	}
-
 	if err := ioutil.WriteFile(iconPath(name), data, 0644); err != nil {
 		return err
 	}
@@ -780,11 +772,10 @@ func main() {
 	e.Renderer = &Renderer{
 		templates: template.Must(template.New("").Funcs(funcs).ParseGlob("views/*.html")),
 	}
-	e.Use(session.Middleware(sessions.NewCookieStore([]byte("secretonymoris"))))
-	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
-		Format: "request:\"${method} ${uri}\" status:${status} latency:${latency} (${latency_human}) bytes:${bytes_out}\n",
-	}))
-	e.Use(middleware.Static("../public"))
+	e.Use(session.Middleware(sessionStore))
+	if os.Getenv("DEV") != "" {
+		e.Use(middleware.Static("../public"))
+	}
 
 	e.GET("/initialize", getInitialize)
 	e.GET("/", getIndex)
@@ -808,4 +799,54 @@ func main() {
 	e.GET("/icons/:file_name", getIcon)
 
 	e.Start(":5000")
+}
+func lastSeenMessageIDKey(userID int64) string {
+	return fmt.Sprintf("last_seen_message:%d", userID)
+}
+
+func setLastSeenMessageID(userID int64, channelID int64, messageID int64) error {
+	conn := pool.Get()
+	defer conn.Close()
+	_, err := conn.Do("HSET", lastSeenMessageIDKey(userID), channelID, messageID)
+	return err
+}
+
+func getLastSeenMessageID(userID int64, channelID int64) (int64, error) {
+	conn := pool.Get()
+	defer conn.Close()
+	return redis.Int64(conn.Do("HGET", lastSeenMessageIDKey(userID), channelID))
+}
+func messageIDsKey(chanID int64) string {
+	return fmt.Sprintf("message_ids:%d", chanID)
+}
+
+func appendMessageID(m *Message) error {
+	conn := pool.Get()
+	defer conn.Close()
+	_, err := conn.Do("ZADD", messageIDsKey(m.ChannelID), m.CreatedAt.UnixNano(), m.ID)
+	return err
+}
+
+func countMessages(chanID int64) (int64, error) {
+	conn := pool.Get()
+	defer conn.Close()
+	cnt, err := redis.Int64(conn.Do("ZCARD", messageIDsKey(chanID)))
+	if err == redis.ErrNil {
+		return 0, nil
+	} else if err == nil {
+		return cnt, nil
+	}
+	return 0, nil
+}
+
+func countUnreadMessages(chanID, lastSeenMsgID int64) (int64, error) {
+	conn := pool.Get()
+	defer conn.Close()
+	cnt, err := redis.Int64(conn.Do("ZREVRANK", messageIDsKey(chanID), lastSeenMsgID))
+	if err == redis.ErrNil {
+		return 0, nil
+	} else if err == nil {
+		return cnt, nil
+	}
+	return 0, nil
 }

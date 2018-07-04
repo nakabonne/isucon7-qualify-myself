@@ -11,3 +11,6 @@ alp:
 
 restart:
 	sh /home/isucon/isubata/scripts/restart.sh
+
+rotate:
+	sh /home/isucon/isubata/scripts/rotate_alplog.sh

@@ -19,5 +19,5 @@ $ sh scripts/rotate_alplog.sh
 ## Execute alp
 
 ```sh
-$ sudo alp -f ~/alp/xxxxxxx.log --max -r
+$ sudo alp -r --sum -f ~/alp/xxxxxx.log --aggregates '/history/\d+,/channel/\d+,/profile/\w+,/icons/\S+'
 ```

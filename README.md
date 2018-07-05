@@ -28,3 +28,23 @@ $ make file=${LOG_FILE_PATH} alp
 $ make pprof
 (pprof) list main.
 ```
+
+## Use slow log
+
+### 仕込む
+
+```sh
+$ make set-slow-log
+```
+
+### 見る
+
+```sh
+$ make mysqldumpslow
+```
+
+### 解除
+
+```sh
+$ make restart-mysql
+```

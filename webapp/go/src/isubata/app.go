@@ -17,16 +17,12 @@ import (
 	"strings"
 	"time"
 
-	_ "net/http/pprof"
-
-	"github.com/garyburd/redigo/redis"
 	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/sessions"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/middleware"
-	redistore "gopkg.in/boj/redistore.v1"
 )
 
 const (
@@ -34,10 +30,8 @@ const (
 )
 
 var (
-	pool          *redis.Pool
 	db            *sqlx.DB
 	ErrBadReqeust = echo.NewHTTPError(http.StatusBadRequest)
-	sessionStore  *redistore.RediStore
 )
 
 type Renderer struct {
@@ -69,26 +63,9 @@ func init() {
 	if db_password != "" {
 		db_password = ":" + db_password
 	}
-	redis_url := os.Getenv("ISUBATA_REDIS_URL")
-	if redis_url == "" {
-		redis_url = "redis://localhost:6379"
-	}
 
-	dsn := fmt.Sprintf("%s%s@tcp(%s:%s)/isubata?parseTime=true&loc=Local&charset=utf8mb4&interpolateParams=true",
+	dsn := fmt.Sprintf("%s%s@tcp(%s:%s)/isubata?parseTime=true&loc=Local&charset=utf8mb4",
 		db_user, db_password, db_host, db_port)
-	pool = &redis.Pool{
-		MaxIdle:     10,
-		IdleTimeout: 10 * time.Second,
-		Dial: func() (redis.Conn, error) {
-			return redis.DialURL(redis_url)
-		},
-	}
-	log.Printf("Connecting to redis: %#v", pool)
-	var err error
-	sessionStore, err = redistore.NewRediStoreWithPool(pool, []byte("secretonymoris"))
-	if err != nil {
-		panic(err)
-	}
 
 	log.Printf("Connecting to db: %q", dsn)
 	db, _ = sqlx.Connect("mysql", dsn)
@@ -104,7 +81,6 @@ func init() {
 	db.SetMaxOpenConns(20)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	log.Printf("Succeeded to connect db.")
-
 }
 
 type User struct {
@@ -135,21 +111,7 @@ func addMessage(channelID, userID int64, content string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	msg := &Message{}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-	err = db.Get(msg, "SELECT * FROM message WHERE id = ?", id)
-	if err != nil {
-		return 0, err
-	}
-	err = appendMessageID(msg)
-	if err != nil {
-		return 0, err
-	}
-
-	return id, nil
+	return res.LastInsertId()
 }
 
 type Message struct {
@@ -160,17 +122,8 @@ type Message struct {
 	CreatedAt time.Time `db:"created_at"`
 }
 
-type MessageWithUser struct {
-	ID              int64     `db:"id"`
-	Content         string    `db:"content"`
-	CreatedAt       time.Time `db:"created_at"`
-	UserName        string    `db:"name"`
-	UserDisplayName string    `db:"display_name"`
-	UserAvatarIcon  string    `db:"avatar_icon"`
-}
-
-func queryMessages(chanID, lastID int64) ([]*Message, error) {
-	msgs := []*Message{}
+func queryMessages(chanID, lastID int64) ([]Message, error) {
+	msgs := []Message{}
 	err := db.Select(&msgs, "SELECT * FROM message WHERE id > ? AND channel_id = ? ORDER BY id DESC LIMIT 100",
 		lastID, chanID)
 	return msgs, err
@@ -254,22 +207,7 @@ func getInitialize(c echo.Context) error {
 	db.MustExec("DELETE FROM image WHERE id > 1001")
 	db.MustExec("DELETE FROM channel WHERE id > 10")
 	db.MustExec("DELETE FROM message WHERE id > 10000")
-	conn := pool.Get()
-	defer conn.Close()
-	conn.Do("FLUSHALL")
-
-	msgs := []*Message{}
-	err := db.Select(&msgs, "SELECT * FROM message ORDER BY id")
-	if err != nil {
-		return err
-	}
-	for _, msg := range msgs {
-		err := appendMessageID(msg)
-		if err != nil {
-			return err
-		}
-	}
-
+	db.MustExec("DELETE FROM haveread")
 	return c.String(204, "")
 }
 
@@ -279,7 +217,9 @@ func getIndex(c echo.Context) error {
 		return c.Redirect(http.StatusSeeOther, "/channel/1")
 	}
 
-	return c.File("../public/index.html")
+	return c.Render(http.StatusOK, "index", map[string]interface{}{
+		"ChannelID": nil,
+	})
 }
 
 type ChannelInfo struct {
@@ -321,7 +261,11 @@ func getChannel(c echo.Context) error {
 }
 
 func getRegister(c echo.Context) error {
-	return c.File("../public/register.html")
+	return c.Render(http.StatusOK, "register", map[string]interface{}{
+		"ChannelID": 0,
+		"Channels":  []ChannelInfo{},
+		"User":      nil,
+	})
 }
 
 func postRegister(c echo.Context) error {
@@ -344,7 +288,11 @@ func postRegister(c echo.Context) error {
 }
 
 func getLogin(c echo.Context) error {
-	return c.File("../public/login.html")
+	return c.Render(http.StatusOK, "login", map[string]interface{}{
+		"ChannelID": 0,
+		"Channels":  []ChannelInfo{},
+		"User":      nil,
+	})
 }
 
 func postLogin(c echo.Context) error {
@@ -378,10 +326,9 @@ func getLogout(c echo.Context) error {
 }
 
 func postMessage(c echo.Context) error {
-	userID := sessUserID(c)
-	if userID == 0 {
-		c.Redirect(http.StatusSeeOther, "/login")
-		return nil
+	user, err := ensureLogin(c)
+	if user == nil {
+		return err
 	}
 
 	message := c.FormValue("message")
@@ -396,48 +343,27 @@ func postMessage(c echo.Context) error {
 		chanID = int64(x)
 	}
 
-	if _, err := addMessage(chanID, userID, message); err != nil {
+	if _, err := addMessage(chanID, user.ID, message); err != nil {
 		return err
 	}
 
 	return c.NoContent(204)
 }
 
-func jsonifyMessages(ms []*Message) ([]map[string]interface{}, error) {
-	if len(ms) == 0 {
-		return []map[string]interface{}{}, nil
-	}
-	mids := make([]int64, len(ms))
-	for i, m := range ms {
-		mids[i] = m.UserID
-	}
-
-	query, args, err := sqlx.In("SELECT id, name, display_name, avatar_icon FROM user WHERE id in (?)", mids)
+func jsonifyMessage(m Message) (map[string]interface{}, error) {
+	u := User{}
+	err := db.Get(&u, "SELECT name, display_name, avatar_icon FROM user WHERE id = ?",
+		m.UserID)
 	if err != nil {
 		return nil, err
 	}
 
-	var users []*User
-	if err := db.Select(&users, query, args...); err != nil {
-		return nil, err
-	}
-
-	table := map[int64]*User{}
-	for _, u := range users {
-		table[u.ID] = u
-	}
-
-	results := make([]map[string]interface{}, 0, len(ms))
-
-	for _, m := range ms {
-		r := make(map[string]interface{})
-		r["id"] = m.ID
-		r["user"] = table[m.UserID]
-		r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
-		r["content"] = m.Content
-		results = append(results, r)
-	}
-	return results, nil
+	r := make(map[string]interface{})
+	r["id"] = m.ID
+	r["user"] = u
+	r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
+	r["content"] = m.Content
+	return r, nil
 }
 
 func getMessage(c echo.Context) error {
@@ -455,43 +381,26 @@ func getMessage(c echo.Context) error {
 		return err
 	}
 
-	/*messages, err := queryMessages(chanID, lastID)
-	if err != nil {
-		return err
-	}*/
-
-	messages := []MessageWithUser{}
-	err = db.Select(&messages, "select m.id, m.content, m.created_at, u.name, u.display_name, u.avatar_icon from message m inner join user u on u.id = m.user_id where m.id > ? and m.channel_id = ? order by m.id desc limit 100", lastID, chanID)
+	messages, err := queryMessages(chanID, lastID)
 	if err != nil {
 		return err
 	}
+
 	response := make([]map[string]interface{}, 0)
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
-		r := make(map[string]interface{})
-		r["id"] = m.ID
-		r["user"] = User{
-			Name:        m.UserName,
-			DisplayName: m.UserDisplayName,
-			AvatarIcon:  m.UserAvatarIcon,
+		r, err := jsonifyMessage(m)
+		if err != nil {
+			return err
 		}
-		r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
-		r["content"] = m.Content
 		response = append(response, r)
 	}
 
-	/*rev := make([]*Message, 0, len(messages))
-	for i := len(messages) - 1; i >= 0; i-- {
-		rev = append(rev, messages[i])
-	}
-
-	response, err := jsonifyMessages(rev)
-	if err != nil {
-		return err
-	}*/
-
 	if len(messages) > 0 {
-		err := setLastSeenMessageID(userID, chanID, messages[0].ID)
+		_, err := db.Exec("INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at)"+
+			" VALUES (?, ?, ?, NOW(), NOW())"+
+			" ON DUPLICATE KEY UPDATE message_id = ?, updated_at = NOW()",
+			userID, chanID, messages[0].ID, messages[0].ID)
 		if err != nil {
 			return err
 		}
@@ -504,6 +413,27 @@ func queryChannels() ([]int64, error) {
 	res := []int64{}
 	err := db.Select(&res, "SELECT id FROM channel")
 	return res, err
+}
+
+func queryHaveRead(userID, chID int64) (int64, error) {
+	type HaveRead struct {
+		UserID    int64     `db:"user_id"`
+		ChannelID int64     `db:"channel_id"`
+		MessageID int64     `db:"message_id"`
+		UpdatedAt time.Time `db:"updated_at"`
+		CreatedAt time.Time `db:"created_at"`
+	}
+	h := HaveRead{}
+
+	err := db.Get(&h, "SELECT * FROM haveread WHERE user_id = ? AND channel_id = ?",
+		userID, chID)
+
+	if err == sql.ErrNoRows {
+		return 0, nil
+	} else if err != nil {
+		return 0, err
+	}
+	return h.MessageID, nil
 }
 
 func fetchUnread(c echo.Context) error {
@@ -522,16 +452,20 @@ func fetchUnread(c echo.Context) error {
 	resp := []map[string]interface{}{}
 
 	for _, chID := range channels {
-		lastID, err := getLastSeenMessageID(userID, chID)
-		if err != nil && err != redis.ErrNil {
+		lastID, err := queryHaveRead(userID, chID)
+		if err != nil {
 			return err
 		}
 
 		var cnt int64
-		if err == nil {
-			cnt, err = countUnreadMessages(chID, lastID)
+		if lastID > 0 {
+			err = db.Get(&cnt,
+				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ? AND ? < id",
+				chID, lastID)
 		} else {
-			cnt, err = countMessages(chID)
+			err = db.Get(&cnt,
+				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ?",
+				chID)
 		}
 		if err != nil {
 			return err
@@ -568,7 +502,8 @@ func getHistory(c echo.Context) error {
 	}
 
 	const N = 20
-	cnt, err := countMessages(chID)
+	var cnt int64
+	err = db.Get(&cnt, "SELECT COUNT(*) as cnt FROM message WHERE channel_id = ?", chID)
 	if err != nil {
 		return err
 	}
@@ -580,7 +515,7 @@ func getHistory(c echo.Context) error {
 		return ErrBadReqeust
 	}
 
-	messages := []*Message{}
+	messages := []Message{}
 	err = db.Select(&messages,
 		"SELECT * FROM message WHERE channel_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
 		chID, N, (page-1)*N)
@@ -588,14 +523,13 @@ func getHistory(c echo.Context) error {
 		return err
 	}
 
-	rev := make([]*Message, 0, len(messages))
+	mjson := make([]map[string]interface{}, 0)
 	for i := len(messages) - 1; i >= 0; i-- {
-		rev = append(rev, messages[i])
-	}
-
-	mjson, err := jsonifyMessages(rev)
-	if err != nil {
-		return err
+		r, err := jsonifyMessage(messages[i])
+		if err != nil {
+			return err
+		}
+		mjson = append(mjson, r)
 	}
 
 	channels := []ChannelInfo{}
@@ -687,10 +621,6 @@ func postAddChannel(c echo.Context) error {
 		fmt.Sprintf("/channel/%v", lastID))
 }
 
-func iconPath(name string) string {
-	return fmt.Sprintf("../public/icons/%s", name)
-}
-
 func postProfile(c echo.Context) error {
 	self, err := ensureLogin(c)
 	if self == nil {
@@ -698,9 +628,9 @@ func postProfile(c echo.Context) error {
 	}
 
 	avatarName := ""
+	var avatarData []byte
 
-	fh, err := c.FormFile("avatar_icon")
-	if err == http.ErrMissingFile {
+	if fh, err := c.FormFile("avatar_icon"); err == http.ErrMissingFile {
 		// no file upload
 	} else if err != nil {
 		return err
@@ -717,25 +647,23 @@ func postProfile(c echo.Context) error {
 			return ErrBadReqeust
 		}
 
-		if fh.Size > avatarMaxBytes {
+		file, err := fh.Open()
+		if err != nil {
+			return err
+		}
+		avatarData, _ = ioutil.ReadAll(file)
+		file.Close()
+
+		if len(avatarData) > avatarMaxBytes {
 			return ErrBadReqeust
 		}
 
-		avatarName = fmt.Sprintf("%d_%s%s", self.ID, fh.Filename, ext)
+		avatarName = fmt.Sprintf("%x%s", sha1.Sum(avatarData), ext)
 	}
 
-	if avatarName != "" {
-		dst, err := os.Create(iconPath(avatarName))
+	if avatarName != "" && len(avatarData) > 0 {
+		_, err := db.Exec("INSERT INTO image (name, data) VALUES (?, ?)", avatarName, avatarData)
 		if err != nil {
-			return err
-		}
-		defer dst.Close()
-		f, err := fh.Open()
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		if _, err := io.Copy(dst, f); err != nil {
 			return err
 		}
 		_, err = db.Exec("UPDATE user SET avatar_icon = ? WHERE id = ?", avatarName, self.ID)
@@ -777,9 +705,6 @@ func getIcon(c echo.Context) error {
 	default:
 		return echo.ErrNotFound
 	}
-	if err := ioutil.WriteFile(iconPath(name), data, 0644); err != nil {
-		return err
-	}
 	return c.Blob(http.StatusOK, mime, data)
 }
 
@@ -796,10 +721,6 @@ func tRange(a, b int64) []int64 {
 }
 
 func main() {
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
-
 	e := echo.New()
 	funcs := template.FuncMap{
 		"add":    tAdd,
@@ -808,10 +729,11 @@ func main() {
 	e.Renderer = &Renderer{
 		templates: template.Must(template.New("").Funcs(funcs).ParseGlob("views/*.html")),
 	}
-	e.Use(session.Middleware(sessionStore))
-	if os.Getenv("DEV") != "" {
-		e.Use(middleware.Static("../public"))
-	}
+	e.Use(session.Middleware(sessions.NewCookieStore([]byte("secretonymoris"))))
+	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
+		Format: "request:\"${method} ${uri}\" status:${status} latency:${latency} (${latency_human}) bytes:${bytes_out}\n",
+	}))
+	e.Use(middleware.Static("../public"))
 
 	e.GET("/initialize", getInitialize)
 	e.GET("/", getIndex)
@@ -835,54 +757,4 @@ func main() {
 	e.GET("/icons/:file_name", getIcon)
 
 	e.Start(":5000")
-}
-func lastSeenMessageIDKey(userID int64) string {
-	return fmt.Sprintf("last_seen_message:%d", userID)
-}
-
-func setLastSeenMessageID(userID int64, channelID int64, messageID int64) error {
-	conn := pool.Get()
-	defer conn.Close()
-	_, err := conn.Do("HSET", lastSeenMessageIDKey(userID), channelID, messageID)
-	return err
-}
-
-func getLastSeenMessageID(userID int64, channelID int64) (int64, error) {
-	conn := pool.Get()
-	defer conn.Close()
-	return redis.Int64(conn.Do("HGET", lastSeenMessageIDKey(userID), channelID))
-}
-func messageIDsKey(chanID int64) string {
-	return fmt.Sprintf("message_ids:%d", chanID)
-}
-
-func appendMessageID(m *Message) error {
-	conn := pool.Get()
-	defer conn.Close()
-	_, err := conn.Do("ZADD", messageIDsKey(m.ChannelID), m.CreatedAt.UnixNano(), m.ID)
-	return err
-}
-
-func countMessages(chanID int64) (int64, error) {
-	conn := pool.Get()
-	defer conn.Close()
-	cnt, err := redis.Int64(conn.Do("ZCARD", messageIDsKey(chanID)))
-	if err == redis.ErrNil {
-		return 0, nil
-	} else if err == nil {
-		return cnt, nil
-	}
-	return 0, nil
-}
-
-func countUnreadMessages(chanID, lastSeenMsgID int64) (int64, error) {
-	conn := pool.Get()
-	defer conn.Close()
-	cnt, err := redis.Int64(conn.Do("ZREVRANK", messageIDsKey(chanID), lastSeenMsgID))
-	if err == redis.ErrNil {
-		return 0, nil
-	} else if err == nil {
-		return cnt, nil
-	}
-	return 0, nil
 }

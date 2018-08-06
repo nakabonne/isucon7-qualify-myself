@@ -13,7 +13,7 @@ restart:
 	sh /home/isucon/isubata2/scripts/restart.sh
 
 rotate:
-	sh /home/isucon/isubata/scripts/rotate_alplog.sh
+	sh /home/isucon/isubata2/scripts/rotate_alplog.sh
 
 pprof:
 	go tool pprof /home/isucon/isubata2/webapp/go/src/isubata/  http://localhost:6060/debug/pprof/profile

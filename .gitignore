@@ -9,3 +9,4 @@ bench/result.json
 webapp/perl/local
 webapp/public/icons
 webapp/go/src/isubata/isubata
+result.json

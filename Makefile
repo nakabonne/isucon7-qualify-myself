@@ -16,7 +16,7 @@ rotate:
 	sh /home/isucon/isubata2/scripts/rotate_alplog.sh
 
 pprof:
-	go tool pprof /home/isucon/isubata2/webapp/go/src/isubata/  http://localhost:6060/debug/pprof/profile
+	go tool pprof /home/isucon/isubata2/webapp/go/isubata  http://localhost:6060/debug/pprof/profile
 
 set-slow-log:
 	sudo mysql -uisucon -pisucon -e "set global slow_query_log = 1"

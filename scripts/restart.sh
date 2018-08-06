@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
-cd /home/isucon/isubata
+cd /home/isucon/isubata2
 git pull
 sudo cp etc/nginx.conf /etc/nginx/nginx.conf
-cd /home/isucon/isubata/webapp/go
+cd /home/isucon/isubata2/webapp/go
 make
 sudo /usr/sbin/nginx -t
 sudo service nginx reload

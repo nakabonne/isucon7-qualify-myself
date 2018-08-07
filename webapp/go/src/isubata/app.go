@@ -377,7 +377,7 @@ func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 	}
 
 	us := []*User{}
-	if err := db.Select(us, query, args...); err != nil {
+	if err := db.Select(&us, query, args...); err != nil {
 		return nil, err
 	}
 

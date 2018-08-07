@@ -431,7 +431,7 @@ func getMessage(c echo.Context) error {
 	}
 
 	//response := make([]map[string]interface{}, 0)
-	response, err := jsonifyMessages(messages)
+	response, err := jsonifyMessages(&messages)
 	if err != nil {
 		return err
 	}
@@ -563,7 +563,7 @@ func getHistory(c echo.Context) error {
 		return ErrBadReqeust
 	}
 
-	messages := []*Message{}
+	messages := []Message{}
 	err = db.Select(&messages,
 		"SELECT * FROM message WHERE channel_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
 		chID, N, (page-1)*N)
@@ -571,7 +571,7 @@ func getHistory(c echo.Context) error {
 		return err
 	}
 
-	rev := make([]*Message, 0, len(messages))
+	rev := make([]Message, 0, len(messages))
 	for i := len(messages) - 1; i >= 0; i-- {
 		rev = append(rev, messages[i])
 	}

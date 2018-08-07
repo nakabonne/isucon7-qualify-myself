@@ -369,9 +369,9 @@ func jsonifyMessage(m Message) (map[string]interface{}, error) {
 
 func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 	messageLen := len(ms)
-	userIDs := make([]int, messageLen)
+	userIDs := make([]string, messageLen)
 	for i, v := range ms {
-		userIDs[i] = int(v.UserID)
+		userIDs[i] = strconv.Itoa(int(v.UserID))
 	}
 	us := []User{}
 	err := db.Get(&us, "SELECT name, display_name, avatar_icon FROM user WHERE id in (?)",

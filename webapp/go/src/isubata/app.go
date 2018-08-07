@@ -391,6 +391,7 @@ func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 				r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
 				r["content"] = m.Content
 				responses[i] = r
+				log.Println("レスポンスは", responses)
 				break
 			}
 		}

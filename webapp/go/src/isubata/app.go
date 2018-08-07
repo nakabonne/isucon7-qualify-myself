@@ -390,7 +390,7 @@ func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 	// TODO: もっと効率よくマッチングする
 	//responses := make([]map[string]interface{}, messageLen)
 	responses := make([]map[string]interface{}, 0, len(ms))
-	for i, m := range ms {
+	for _, m := range ms {
 		r := make(map[string]interface{})
 		r["id"] = m.ID
 		r["user"] = table[m.UserID]

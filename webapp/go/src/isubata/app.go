@@ -351,6 +351,7 @@ func postMessage(c echo.Context) error {
 	return c.NoContent(204)
 }
 
+/*
 func jsonifyMessage(m Message) (map[string]interface{}, error) {
 	u := User{}
 	err := db.Get(&u, "SELECT name, display_name, avatar_icon FROM user WHERE id = ?",
@@ -365,6 +366,38 @@ func jsonifyMessage(m Message) (map[string]interface{}, error) {
 	r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
 	r["content"] = m.Content
 	return r, nil
+}*/
+
+func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
+	messageLen := len(ms)
+	userIDs := make([]int64, messageLen)
+	for i, v := range ms {
+		userIDs[i] = v.UserID
+	}
+	us := []User{}
+	err := db.Get(&us, "SELECT name, display_name, avatar_icon FROM user WHERE id in (?)",
+		userIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO: もっと効率よくマッチングする
+	responses := make([]map[string]interface{}, messageLen)
+	for i, m := range ms {
+		r := make(map[string]interface{})
+		for j, u := range us {
+			if m.UserID == u.ID {
+				r["id"] = m.ID
+				r["user"] = u
+				r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
+				r["content"] = m.Content
+				responses[i] = r
+				break
+			}
+		}
+	}
+
+	return responses, nil
 }
 
 func getMessage(c echo.Context) error {
@@ -387,15 +420,16 @@ func getMessage(c echo.Context) error {
 		return err
 	}
 
-	response := make([]map[string]interface{}, 0)
-	for i := len(messages) - 1; i >= 0; i-- {
+	//response := make([]map[string]interface{}, 0)
+	response := jsonifyMessages(messages)
+	/*for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		r, err := jsonifyMessage(m)
 		if err != nil {
 			return err
 		}
 		response = append(response, r)
-	}
+	}*/
 
 	if len(messages) > 0 {
 		_, err := db.Exec("INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at)"+

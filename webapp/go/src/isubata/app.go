@@ -369,32 +369,34 @@ func jsonifyMessage(m Message) (map[string]interface{}, error) {
 
 func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 	messageLen := len(ms)
-	userIDs := make([]string, messageLen)
-	for i, v := range ms {
-		userIDs[i] = strconv.Itoa(int(v.UserID))
-	}
-	us := []User{}
-	err := db.Get(&us, "SELECT name, display_name, avatar_icon FROM user WHERE id in (?)",
-		userIDs)
+	userIDs := make([]int64, messageLen)
+
+	query, args, err := sqlx.In("SELECT id, name, display_name, avatar_icon FROM user WHERE id in (?)", userIDs)
 	if err != nil {
 		return nil, err
+	}
+
+	us := []*User{}
+	if err := db.Select(us, query, args...); err != nil {
+		return nil, err
+	}
+
+	table := make(map[int64]*User{}, len(us))
+	for _, u := range us {
+		table[u.ID] = u
 	}
 
 	// TODO: もっと効率よくマッチングする
 	responses := make([]map[string]interface{}, messageLen)
 	for i, m := range ms {
 		r := make(map[string]interface{})
-		for _, u := range us {
-			if m.UserID == u.ID {
-				r["id"] = m.ID
-				r["user"] = u
-				r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
-				r["content"] = m.Content
-				responses[i] = r
-				log.Println("レスポンスは", responses)
-				break
-			}
-		}
+		r["id"] = m.ID
+		r["user"] = table[m.UserID]
+		r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
+		r["content"] = m.Content
+		responses[i] = r
+		log.Println("レスポンスは", responses)
+		break
 	}
 
 	return responses, nil

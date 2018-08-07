@@ -351,7 +351,7 @@ func postMessage(c echo.Context) error {
 	return c.NoContent(204)
 }
 
-func jsonifyMessage(m Message) (map[string]interface{}, error) {
+/*func jsonifyMessage(m Message) (map[string]interface{}, error) {
 	u := User{}
 	err := db.Get(&u, "SELECT name, display_name, avatar_icon FROM user WHERE id = ?",
 		m.UserID)
@@ -365,7 +365,7 @@ func jsonifyMessage(m Message) (map[string]interface{}, error) {
 	r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
 	r["content"] = m.Content
 	return r, nil
-}
+}*/
 
 func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 	messageLen := len(ms)
@@ -571,14 +571,14 @@ func getHistory(c echo.Context) error {
 		return err
 	}
 
-	mjson := make([]map[string]interface{}, 0)
-	for i := len(messages) - 1; i >= 0; i-- {
+	mjson := jsonifyMessages(messages)
+	/*for i := len(messages) - 1; i >= 0; i-- {
 		r, err := jsonifyMessage(messages[i])
 		if err != nil {
 			return err
 		}
 		mjson = append(mjson, r)
-	}
+	}*/
 
 	channels := []ChannelInfo{}
 	err = db.Select(&channels, "SELECT * FROM channel ORDER BY id")

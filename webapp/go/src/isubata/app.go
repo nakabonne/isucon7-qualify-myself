@@ -388,7 +388,8 @@ func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 	}
 
 	// TODO: もっと効率よくマッチングする
-	responses := make([]map[string]interface{}, messageLen)
+	//responses := make([]map[string]interface{}, messageLen)
+	responses := make([]map[string]interface{}, 0, len(ms))
 	for i, m := range ms {
 		r := make(map[string]interface{})
 		r["id"] = m.ID
@@ -396,6 +397,7 @@ func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 		r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
 		r["content"] = m.Content
 		responses[i] = r
+		responses = append(responses, r)
 		log.Println("レスポンスは", responses)
 		break
 	}

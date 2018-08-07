@@ -381,7 +381,8 @@ func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 		return nil, err
 	}
 
-	table := make(map[int64]*User{}, len(us))
+	//table := make([int64]*User{}, len(us))
+	table := map[int64]*User{}
 	for _, u := range us {
 		table[u.ID] = u
 	}

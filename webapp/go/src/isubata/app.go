@@ -384,7 +384,7 @@ func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 	responses := make([]map[string]interface{}, messageLen)
 	for i, m := range ms {
 		r := make(map[string]interface{})
-		for j, u := range us {
+		for _, u := range us {
 			if m.UserID == u.ID {
 				r["id"] = m.ID
 				r["user"] = u

@@ -369,7 +369,13 @@ func jsonifyMessage(m Message) (map[string]interface{}, error) {
 
 func jsonifyMessages(ms []Message) ([]map[string]interface{}, error) {
 	messageLen := len(ms)
+	if messageLen == 0 {
+		return []map[string]interface{}{}, nil
+	}
 	userIDs := make([]int64, messageLen)
+	for i, m := range ms {
+		userIDs[i] = m.UserID
+	}
 
 	query, args, err := sqlx.In("SELECT id, name, display_name, avatar_icon FROM user WHERE id in (?)", userIDs)
 	if err != nil {

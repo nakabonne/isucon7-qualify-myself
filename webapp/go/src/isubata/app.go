@@ -571,7 +571,10 @@ func getHistory(c echo.Context) error {
 		return err
 	}
 
-	mjson := jsonifyMessages(messages)
+	mjson, err := jsonifyMessages(messages)
+	if err != nil {
+		return err
+	}
 	/*for i := len(messages) - 1; i >= 0; i-- {
 		r, err := jsonifyMessage(messages[i])
 		if err != nil {
